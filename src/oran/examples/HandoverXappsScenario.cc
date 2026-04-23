@@ -5,17 +5,24 @@
 #include "ns3/E2AP.h"
 #include "ns3/applications-module.h"
 #include "ns3/core-module.h"
+#include "ns3/finebalancer-kpm-store.h"
 #include "ns3/lte-module.h"
 #include "ns3/mobility-module.h"
-#include "ns3/netanim-module.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/xAppHandoverMaxRsrq.h"
+#ifdef ORAN_HAS_MLPACK
 #include "ns3/xAppHandoverMlpackKmeans.h"
+#endif
 
 #include <map>
+#ifdef ORAN_HAS_MLPACK
 #include <mlpack/core.hpp>
 #include <mlpack/methods/kmeans/kmeans.hpp>
 #include <mlpack/prereqs.hpp>
+#endif
+#include <array>
+#include <limits>
+#include <numeric>
 #include <string>
 
 NS_LOG_COMPONENT_DEFINE("HandoverXappsScenario");
@@ -120,6 +127,303 @@ operator<<(std::ostream& os, const Registry& registry)
 
 std::vector<Registry>
     simulationRegistry; ///< Vector containing registries collected through the simulation
+
+class FineBalancerDirectLoop : public Object
+{
+  public:
+    void Setup(NetDeviceContainer enbDevs,
+               NetDeviceContainer ueDevs,
+               double stepTime,
+               double collectingWindow,
+               std::string csvFilename)
+    {
+        m_enbDevs = enbDevs;
+        m_ueDevs = ueDevs;
+        m_stepTime = stepTime;
+        m_collectingWindow = collectingWindow;
+        m_csvFilename = csvFilename;
+        m_store = FineBalancerKpmStore::Get();
+        m_store->Clear();
+
+        for (uint32_t i = 0; i < m_enbDevs.GetN(); ++i)
+        {
+            Ptr<LteEnbNetDevice> enb = m_enbDevs.Get(i)->GetObject<LteEnbNetDevice>();
+            m_txPowerByCell[enb->GetCellId()] = enb->GetPhy()->GetTxPower();
+        }
+    }
+
+    void Start()
+    {
+        Simulator::Schedule(Seconds(std::max(0.0, m_stepTime - m_collectingWindow)),
+                            &FineBalancerDirectLoop::StartCollecting,
+                            this);
+        Simulator::Schedule(Seconds(m_stepTime), &FineBalancerDirectLoop::RunStep, this);
+    }
+
+    void HandleDlPhyTransmission(std::string context, const PhyTransmissionStatParameters params)
+    {
+        if (!m_collecting)
+        {
+            return;
+        }
+
+        CellWindow& window = m_windows[params.m_cellId];
+        window.txCount++;
+        window.dlThroughputMbps +=
+            static_cast<double>(params.m_size) * 8.0 / 1024.0 / 1024.0 / m_collectingWindow;
+        window.userThroughputMbps[params.m_rnti] +=
+            static_cast<double>(params.m_size) * 8.0 / 1024.0 / 1024.0 / m_collectingWindow;
+        window.rbUsed += EstimateRbCount(params.m_mcs, params.m_size);
+        if (params.m_mcs < window.mcsCount.size())
+        {
+            window.mcsCount[params.m_mcs]++;
+        }
+    }
+
+    void Finish()
+    {
+        m_store->WriteJoinedCsv(m_csvFilename);
+    }
+
+  private:
+    struct CellWindow
+    {
+        uint32_t rbUsed{0};
+        uint32_t txCount{0};
+        double dlThroughputMbps{0.0};
+        std::array<uint32_t, 29> mcsCount{};
+        std::map<uint16_t, double> userThroughputMbps;
+    };
+
+    uint32_t EstimateRbCount(uint8_t mcs, uint16_t tbSizeBytes)
+    {
+        uint32_t tbSizeBits = static_cast<uint32_t>(tbSizeBytes) * 8;
+        for (uint32_t nRb = 1; nRb <= 110; ++nRb)
+        {
+            if (static_cast<uint32_t>(m_amc.GetDlTbSizeFromMcs(mcs, nRb)) >= tbSizeBits)
+            {
+                return nRb;
+            }
+        }
+        return 110;
+    }
+
+    void StartCollecting()
+    {
+        m_collecting = true;
+    }
+
+    void RunStep()
+    {
+        m_collecting = false;
+        SnapshotKpms();
+        ApplyDirectXapp();
+        ResetWindow();
+
+        m_step++;
+        Simulator::Schedule(Seconds(std::max(0.0, m_stepTime - m_collectingWindow)),
+                            &FineBalancerDirectLoop::StartCollecting,
+                            this);
+        Simulator::Schedule(Seconds(m_stepTime), &FineBalancerDirectLoop::RunStep, this);
+    }
+
+    void SnapshotKpms()
+    {
+        double totalCqi = 0.0;
+        uint32_t totalUes = 0;
+        std::map<uint16_t, uint32_t> servedByCell;
+        std::map<uint16_t, uint32_t> farByCell;
+        std::map<uint16_t, double> cqiByCell;
+        std::map<uint16_t, double> throughputByCell;
+
+        for (uint32_t i = 0; i < m_ueDevs.GetN(); ++i)
+        {
+            Ptr<LteUeNetDevice> ue = m_ueDevs.Get(i)->GetObject<LteUeNetDevice>();
+            uint16_t cellId = ue->GetRrc()->GetCellId();
+            uint16_t rnti = ue->GetRrc()->GetRnti();
+            uint64_t imsi = ue->GetImsi();
+            double avgCqi = ue->GetPhy()->GetFineBalancerAvgCqi();
+            double throughput = ue->GetPhy()->GetFineBalancerDlThroughput();
+
+            servedByCell[cellId]++;
+            cqiByCell[cellId] += avgCqi;
+            throughputByCell[cellId] += throughput;
+            totalCqi += avgCqi;
+            totalUes++;
+
+            if (IsFarUe(cellId, ue))
+            {
+                farByCell[cellId]++;
+            }
+
+            m_store->PutKpm(m_step, cellId, rnti, imsi, "UE_AvgCqi", avgCqi);
+            m_store->PutKpm(m_step, cellId, rnti, imsi, "UE_Throughput", throughput);
+        }
+
+        double networkAvgCqi = totalUes == 0 ? 0.0 : totalCqi / totalUes;
+        for (uint32_t i = 0; i < m_enbDevs.GetN(); ++i)
+        {
+            Ptr<LteEnbNetDevice> enb = m_enbDevs.Get(i)->GetObject<LteEnbNetDevice>();
+            uint16_t cellId = enb->GetCellId();
+            uint32_t served = servedByCell[cellId];
+            uint32_t far = farByCell[cellId];
+            const CellWindow& window = m_windows[cellId];
+
+            double nRbTotal = static_cast<double>(enb->GetDlBandwidth()) * m_collectingWindow * 1000.0;
+            double rbUtil = nRbTotal == 0.0 ? 0.0 : window.rbUsed / nRbTotal;
+            double avgCqi = served == 0 ? 0.0 : cqiByCell[cellId] / served;
+            double farRatio = served == 0 ? 0.0 : static_cast<double>(far) / served;
+
+            m_latestRbUtil[cellId] = rbUtil;
+            m_latestThroughput[cellId] = throughputByCell[cellId];
+
+            m_store->PutKpm(m_step, cellId, 0, 0, "rbUtil", rbUtil);
+            m_store->PutKpm(m_step, cellId, 0, 0, "dlThroughput", window.dlThroughputMbps);
+            m_store->PutKpm(m_step, cellId, 0, 0, "ServedUes", served);
+            m_store->PutKpm(m_step, cellId, 0, 0, "FarUes", farRatio);
+            m_store->PutKpm(m_step, cellId, 0, 0, "AvgCqi", avgCqi);
+            m_store->PutKpm(m_step, cellId, 0, 0, "Throughput", throughputByCell[cellId]);
+            m_store->PutKpm(m_step, cellId, 0, 0, "TotalCqi", networkAvgCqi);
+
+            for (uint32_t mcs = 0; mcs < window.mcsCount.size(); ++mcs)
+            {
+                double ratio =
+                    window.txCount == 0 ? 0.0 : static_cast<double>(window.mcsCount[mcs]) / window.txCount;
+                m_store->PutKpm(m_step, cellId, 0, 0, "MCSPen_" + std::to_string(mcs), ratio);
+            }
+        }
+    }
+
+    bool IsFarUe(uint16_t cellId, Ptr<LteUeNetDevice> ue) const
+    {
+        Ptr<LteEnbNetDevice> enb = GetEnbByCellId(cellId);
+        if (!enb)
+        {
+            return false;
+        }
+        Vector enbPos = enb->GetNode()->GetObject<MobilityModel>()->GetPosition();
+        Vector uePos = ue->GetNode()->GetObject<MobilityModel>()->GetPosition();
+        double dx = enbPos.x - uePos.x;
+        double dy = enbPos.y - uePos.y;
+        double dz = enbPos.z - uePos.z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz) >= 237.74;
+    }
+
+    Ptr<LteEnbNetDevice> GetEnbByCellId(uint16_t cellId) const
+    {
+        for (uint32_t i = 0; i < m_enbDevs.GetN(); ++i)
+        {
+            Ptr<LteEnbNetDevice> enb = m_enbDevs.Get(i)->GetObject<LteEnbNetDevice>();
+            if (enb->GetCellId() == cellId)
+            {
+                return enb;
+            }
+        }
+        return nullptr;
+    }
+
+    void ApplyDirectXapp()
+    {
+        uint16_t selectedCell = 0;
+        std::string xappName;
+        if (m_step % 2 == 0)
+        {
+            xappName = "ThroughputBoostXapp";
+            selectedCell = SelectLowestThroughputCell();
+            AdjustTxPower(selectedCell, 1.0, xappName);
+        }
+        else
+        {
+            xappName = "InterferenceGuardXapp";
+            selectedCell = SelectHighestRbUtilCell();
+            AdjustTxPower(selectedCell, -1.0, xappName);
+        }
+    }
+
+    uint16_t SelectLowestThroughputCell() const
+    {
+        uint16_t selectedCell = 0;
+        double selectedValue = std::numeric_limits<double>::max();
+        for (uint32_t i = 0; i < m_enbDevs.GetN(); ++i)
+        {
+            uint16_t cellId = m_enbDevs.Get(i)->GetObject<LteEnbNetDevice>()->GetCellId();
+            auto it = m_latestThroughput.find(cellId);
+            double value = it == m_latestThroughput.end() ? 0.0 : it->second;
+            if (selectedCell == 0 || value < selectedValue)
+            {
+                selectedCell = cellId;
+                selectedValue = value;
+            }
+        }
+        return selectedCell;
+    }
+
+    uint16_t SelectHighestRbUtilCell() const
+    {
+        uint16_t selectedCell = 0;
+        double selectedValue = -1.0;
+        for (const auto& [cellId, value] : m_latestRbUtil)
+        {
+            if (selectedCell == 0 || value > selectedValue)
+            {
+                selectedCell = cellId;
+                selectedValue = value;
+            }
+        }
+        return selectedCell == 0 && m_enbDevs.GetN() > 0
+                   ? m_enbDevs.Get(0)->GetObject<LteEnbNetDevice>()->GetCellId()
+                   : selectedCell;
+    }
+
+    void AdjustTxPower(uint16_t cellId, double deltaDb, const std::string& xappName)
+    {
+        Ptr<LteEnbNetDevice> enb = GetEnbByCellId(cellId);
+        if (!enb)
+        {
+            return;
+        }
+        double oldPower = enb->GetPhy()->GetTxPower();
+        double newPower = std::max(20.0, std::min(46.0, oldPower + deltaDb));
+        enb->GetPhy()->SetTxPower(newPower);
+        m_txPowerByCell[cellId] = newPower;
+        m_store->PutAction(m_step, xappName, "TxPowerDbm", newPower, cellId, 0);
+    }
+
+    void ResetWindow()
+    {
+        m_windows.clear();
+        for (uint32_t i = 0; i < m_ueDevs.GetN(); ++i)
+        {
+            Ptr<LteUeNetDevice> ue = m_ueDevs.Get(i)->GetObject<LteUeNetDevice>();
+            ue->GetPhy()->ClearFineBalancerDlThroughput();
+        }
+    }
+
+    NetDeviceContainer m_enbDevs;
+    NetDeviceContainer m_ueDevs;
+    Ptr<FineBalancerKpmStore> m_store;
+    LteAmc m_amc;
+    bool m_collecting{false};
+    uint32_t m_step{0};
+    double m_stepTime{1.0};
+    double m_collectingWindow{0.05};
+    std::string m_csvFilename{"finebalancer-direct-log.csv"};
+    std::map<uint16_t, CellWindow> m_windows;
+    std::map<uint16_t, double> m_latestRbUtil;
+    std::map<uint16_t, double> m_latestThroughput;
+    std::map<uint16_t, double> m_txPowerByCell;
+};
+
+static Ptr<FineBalancerDirectLoop> g_fineBalancerDirectLoop;
+
+static void
+FineBalancerDlPhyTransmissionCallback(std::string context, const PhyTransmissionStatParameters params)
+{
+    if (g_fineBalancerDirectLoop)
+    {
+        g_fineBalancerDirectLoop->HandleDlPhyTransmission(context, params);
+    }
+}
 
 /**
  * \brief Callback function when a connection is established in the UE
@@ -368,9 +672,26 @@ main(int argc, char** argv)
 
     unsigned scenarioi = 0;
     std::string output_csv_filename = "output.csv";
+    bool enableFineBalancerDirect = true;
+    double fineBalancerStepTime = 1.0;
+    double fineBalancerCollectingWindow = 0.05;
+    std::string fineBalancerCsvFilename = "finebalancer-direct-log.csv";
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", ss.str(), scenarioi);
     cmd.AddValue("outputFile", "Output csv file name", output_csv_filename);
+    cmd.AddValue("simTime", "Simulation time in seconds", simTime);
+    cmd.AddValue("enableFineBalancerDirect",
+                 "Enable FineBalancer-style direct KPM collection and direct xApp control",
+                 enableFineBalancerDirect);
+    cmd.AddValue("fineBalancerStepTime",
+                 "FineBalancer-style direct xApp step interval in seconds",
+                 fineBalancerStepTime);
+    cmd.AddValue("fineBalancerCollectingWindow",
+                 "FineBalancer-style KPM collection window before each step in seconds",
+                 fineBalancerCollectingWindow);
+    cmd.AddValue("fineBalancerCsv",
+                 "Joined FineBalancer-style action/KPM CSV filename",
+                 fineBalancerCsvFilename);
     cmd.Parse(argc, argv);
 
     typedef enum handoverScenarios
@@ -391,6 +712,15 @@ main(int argc, char** argv)
         std::cerr << "Invalid handover scenario id: " << scenarioi << std::endl;
         return -1;
     }
+#ifndef ORAN_HAS_MLPACK
+    if (scenarioi == HandoverScenarios::ORAN_RIC_XAPP_KMEANS ||
+        scenarioi == HandoverScenarios::ORAN_RIC_XAPP_KMEANS_INITIATED)
+    {
+        std::cerr << "KMeans xApp scenarios require mlpack and ensmallen headers. Use scenario 0, 1, 4, or 5 in this build."
+                  << std::endl;
+        return -1;
+    }
+#endif
     HandoverScenarios scenario = static_cast<HandoverScenarios>(scenarioi);
 
     // change some default attributes so that they are reasonable for
@@ -587,6 +917,20 @@ main(int argc, char** argv)
     NetDeviceContainer enbLteDevs = lteHelper->InstallEnbDevice(enbNodes);
     NetDeviceContainer ueLteDevs = lteHelper->InstallUeDevice(ueNodes);
 
+    if (enableFineBalancerDirect)
+    {
+        g_fineBalancerDirectLoop = CreateObject<FineBalancerDirectLoop>();
+        g_fineBalancerDirectLoop->Setup(enbLteDevs,
+                                        ueLteDevs,
+                                        fineBalancerStepTime,
+                                        fineBalancerCollectingWindow,
+                                        fineBalancerCsvFilename);
+        Config::Connect(
+            "/NodeList/*/DeviceList/*/ComponentCarrierMap/*/LteEnbPhy/DlPhyTransmission",
+            MakeCallback(&FineBalancerDlPhyTransmissionCallback));
+        g_fineBalancerDirectLoop->Start();
+    }
+
     // Install the IP stack on the UEs
     internet.Install(ueNodes);
     Ipv4InterfaceContainer ueIpIfaces;
@@ -698,11 +1042,13 @@ main(int argc, char** argv)
         if (scenario == HandoverScenarios::ORAN_RIC_XAPP_KMEANS ||
             scenario == HandoverScenarios::ORAN_RIC_XAPP_KMEANS_INITIATED)
         {
+#ifdef ORAN_HAS_MLPACK
             Ptr<xAppHandoverMlpackKmeans> handoverxapp = CreateObject<xAppHandoverMlpackKmeans>(
                 false,
                 1,
                 scenario == HandoverScenarios::ORAN_RIC_XAPP_KMEANS_INITIATED);
             sgw->AddApplication(handoverxapp);
+#endif
         }
 
         if (scenario == HandoverScenarios::ORAN_RIC_XAPP_MAXRSRQ ||
@@ -776,6 +1122,11 @@ main(int argc, char** argv)
 
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
+
+    if (enableFineBalancerDirect && g_fineBalancerDirectLoop)
+    {
+        g_fineBalancerDirectLoop->Finish();
+    }
 
     // flowMonitor->SerializeToXmlFile("flow.xml", true, false);
     std::ofstream csvOutput(output_csv_filename);

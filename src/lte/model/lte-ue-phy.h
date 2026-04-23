@@ -349,6 +349,10 @@ class LteUePhy : public LtePhy
      */
     typedef void (*PowerSpectralDensityTracedCallback)(uint16_t rnti, Ptr<SpectrumValue> psd);
 
+    void ClearFineBalancerDlThroughput();
+    double GetFineBalancerDlThroughput() const;
+    uint16_t GetFineBalancerAvgCqi() const;
+
   private:
     /**
      * \brief Set transmit mode 1 gain function
@@ -786,6 +790,9 @@ class LteUePhy : public LtePhy
      * RSRP-SINR stats.
      */
     uint16_t m_rsrpSinrSampleCounter;
+
+    uint16_t m_fineBalancerAvgCqi{0};
+    double m_fineBalancerDlThroughput{0.0};
 
     /**
      * The `ReportUeMeasurements` trace source. Contains trace information

@@ -877,7 +877,9 @@ LteUePhy::CreateDlCqiFeedbackMessage(const SpectrumValue& sinr)
         {
             if (activeSubChannels > 0)
             {
-                dlcqi.m_wbCqi.push_back((uint16_t)cqiSum / activeSubChannels);
+                uint16_t avgCqi = (uint16_t)cqiSum / activeSubChannels;
+                dlcqi.m_wbCqi.push_back(avgCqi);
+                m_fineBalancerAvgCqi = avgCqi;
             }
             else
             {
@@ -1029,6 +1031,24 @@ LteUePhy::DoNotifyConnectionSuccessful()
 }
 
 void
+LteUePhy::ClearFineBalancerDlThroughput()
+{
+    m_fineBalancerDlThroughput = 0.0;
+}
+
+double
+LteUePhy::GetFineBalancerDlThroughput() const
+{
+    return m_fineBalancerDlThroughput;
+}
+
+uint16_t
+LteUePhy::GetFineBalancerAvgCqi() const
+{
+    return m_fineBalancerAvgCqi;
+}
+
+void
 LteUePhy::ReceiveLteControlMessageList(std::list<Ptr<LteControlMessage>> msgList)
 {
     NS_LOG_FUNCTION(this);
@@ -1057,6 +1077,12 @@ LteUePhy::ReceiveLteControlMessageList(std::list<Ptr<LteControlMessage>> msgList
             }
 
             std::vector<int> dlRb;
+
+            for (std::size_t i = 0; i < dci.m_tbsSize.size(); i++)
+            {
+                m_fineBalancerDlThroughput +=
+                    static_cast<double>(dci.m_tbsSize.at(i)) * 8.0 / 1000000.0 / 0.004;
+            }
 
             // translate the DCI to Spectrum framework
             uint32_t mask = 0x1;

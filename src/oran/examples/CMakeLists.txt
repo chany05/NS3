@@ -79,26 +79,42 @@ if(NOT(${ARMADILLO} STREQUAL ARMADILLO-NOTFOUND) AND NOT(${MLPACK} STREQUAL MLPA
             ${libapplications}
             IGNORE_PCH TRUE
     )
-    build_lib_example(
-            NAME HandoverXappsScenario
-            SOURCE_FILES HandoverXappsScenario.cc
-            LIBRARIES_TO_LINK
-            ${libcore}
-            ${libmobility}
-            ${libpoint-to-point}
-            ${liblte}
-            ${liboran}
-            ${libapplications}
-            ${libnetanim}
-            IGNORE_PCH TRUE
-    )
     target_compile_options(TestHandoverXappMLPACK PUBLIC -fopenmp)
     target_compile_options(TestHandoverXappMLPACKReinforcedLearning PUBLIC -fopenmp)
-    target_compile_options(HandoverXappsScenario PUBLIC -fopenmp)
     target_link_options(TestHandoverXappMLPACK PUBLIC -fopenmp)
     target_link_options(TestHandoverXappMLPACKReinforcedLearning PUBLIC -fopenmp)
-    target_link_options(HandoverXappsScenario PUBLIC -fopenmp)
+endif()
 
+build_lib_example(
+        NAME HandoverXappsScenario
+        SOURCE_FILES HandoverXappsScenario.cc
+        LIBRARIES_TO_LINK
+        ${libcore}
+        ${libmobility}
+        ${libpoint-to-point}
+        ${liblte}
+        ${liboran}
+        ${libapplications}
+        IGNORE_PCH TRUE
+)
+
+build_lib_example(
+        NAME SingleCellFineBalancerScenario
+        SOURCE_FILES SingleCellFineBalancerScenario.cc
+        LIBRARIES_TO_LINK
+        ${libcore}
+        ${libinternet}
+        ${libmobility}
+        ${libpoint-to-point}
+        ${liblte}
+        ${liboran}
+        ${libapplications}
+)
+
+if(oran_has_mlpack)
+    target_compile_definitions(HandoverXappsScenario PUBLIC ORAN_HAS_MLPACK=1)
+    target_compile_options(HandoverXappsScenario PUBLIC -fopenmp)
+    target_link_options(HandoverXappsScenario PUBLIC -fopenmp)
 endif()
 
 #find_package(Torch)
