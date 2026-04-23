@@ -24,8 +24,8 @@ class SingleCellFineBalancerLoop : public Object
                NetDeviceContainer ueDevs,
                double stepTime,
                double collectingWindow,
-               uint32_t initCqiTimerThreshold,
-               uint32_t initUlGrantMcs,
+               double initTxMode2GainDb,
+               double initUeTxPowerDbm,
                std::string csvFilename)
     {
         m_enb = enb;
@@ -37,11 +37,11 @@ class SingleCellFineBalancerLoop : public Object
         m_store->Clear();
 
         m_txPower = m_enb->GetPhy()->GetTxPower();
-        m_cqiTimerThreshold = initCqiTimerThreshold;
-        m_ulGrantMcs = initUlGrantMcs;
+        m_txMode2Gain = initTxMode2GainDb;
+        m_ueTxPower = initUeTxPowerDbm;
 
-        ApplyCqiTimerThreshold();
-        ApplyUlGrantMcs();
+        ApplyTxMode2Gain();
+        ApplyUeTxPower();
     }
 
     void Start()
@@ -55,22 +55,80 @@ class SingleCellFineBalancerLoop : public Object
         Simulator::Schedule(Seconds(2.0 * m_stepTime), &SingleCellFineBalancerLoop::RunStep, this);
     }
 
-    void HandleDlPhyTransmission(std::string context, const PhyTransmissionStatParameters params)
+    // ── DL PHY: rbUtil, dlThroughput ────────────────────────────────────────
+    void HandleDlPhyTransmission(std::string /*context*/,
+                                 const PhyTransmissionStatParameters params)
     {
         if (!m_collecting)
         {
             return;
         }
-        m_window.txCount++;
-        // Count distinct TTIs (1ms slots) that had any DL scheduling (true occupancy metric)
         uint64_t sfKey = static_cast<uint64_t>(params.m_timestamp);
-        if (sfKey != m_window.lastSfKey)
+        if (sfKey != m_window.lastDlSfKey)
         {
-            m_window.lastSfKey = sfKey;
-            m_window.scheduledSubframes++;
+            m_window.lastDlSfKey = sfKey;
+            m_window.scheduledDlSubframes++;
         }
         m_window.dlThroughputMbps +=
             static_cast<double>(params.m_size) * 8.0 / 1024.0 / 1024.0 / m_collectingWindow;
+    }
+
+    // ── UE measurements: RSRP, RSRQ ────────────────────────────────────────
+    void HandleUeMeasurements(std::string /*context*/,
+                              uint16_t /*rnti*/,
+                              uint16_t /*cellId*/,
+                              double rsrp,
+                              double rsrq,
+                              bool isServingCell,
+                              uint8_t /*ccId*/)
+    {
+        if (!m_collecting || !isServingCell)
+        {
+            return;
+        }
+        m_window.sumRsrp += rsrp;
+        m_window.sumRsrq += rsrq;
+        m_window.countRsrp++;
+    }
+
+    // ── UL PHY: ulThroughput ────────────────────────────────────────────────
+    void HandleUlPhyTransmission(std::string /*context*/,
+                                 const PhyTransmissionStatParameters params)
+    {
+        if (!m_collecting)
+        {
+            return;
+        }
+        m_window.ulThroughputMbps +=
+            static_cast<double>(params.m_size) * 8.0 / 1024.0 / 1024.0 / m_collectingWindow;
+    }
+
+    // ── eNB UL SINR (SRS-based): ulSinr ────────────────────────────────────
+    void HandleUlSinrReport(std::string /*context*/,
+                            uint16_t /*cellId*/,
+                            uint16_t /*rnti*/,
+                            double sinrLinear,
+                            uint8_t /*ccId*/)
+    {
+        if (!m_collecting)
+        {
+            return;
+        }
+        m_window.sumUlSinrDb += 10.0 * std::log10(sinrLinear);
+        m_window.countUlSinr++;
+    }
+
+    // ── eNB UL interference spectrum: ulInterference ───────────────────────
+    void HandleUlInterference(std::string /*context*/,
+                              uint16_t /*cellId*/,
+                              Ptr<SpectrumValue> interference)
+    {
+        if (!m_collecting)
+        {
+            return;
+        }
+        m_window.sumUlInterference += Sum(*interference);
+        m_window.countUlInterference++;
     }
 
     void Finish()
@@ -81,25 +139,23 @@ class SingleCellFineBalancerLoop : public Object
   private:
     struct Window
     {
-        uint32_t txCount{0};
-        uint32_t scheduledSubframes{0};
-        uint64_t lastSfKey{UINT64_MAX};
+        // DL
+        uint32_t scheduledDlSubframes{0};
+        uint64_t lastDlSfKey{UINT64_MAX};
         double dlThroughputMbps{0.0};
-        std::array<uint32_t, 29> mcsCount{};
+        // RSRP/RSRQ
+        double sumRsrp{0.0};
+        double sumRsrq{0.0};
+        uint32_t countRsrp{0};
+        // UL throughput
+        double ulThroughputMbps{0.0};
+        // UL SINR
+        double sumUlSinrDb{0.0};
+        uint32_t countUlSinr{0};
+        // UL interference
+        double sumUlInterference{0.0};
+        uint32_t countUlInterference{0};
     };
-
-    uint32_t EstimateRbCount(uint8_t mcs, uint16_t tbSizeBytes)
-    {
-        uint32_t tbSizeBits = static_cast<uint32_t>(tbSizeBytes) * 8;
-        for (uint32_t nRb = 1; nRb <= 110; ++nRb)
-        {
-            if (static_cast<uint32_t>(m_amc.GetDlTbSizeFromMcs(mcs, nRb)) >= tbSizeBits)
-            {
-                return nRb;
-            }
-        }
-        return 110;
-    }
 
     // EARTH project model: P(W) = 130 + 4.7 * 10^((dBm - 30) / 10)
     double EstimatedPowerW(double txPowerDbm) const
@@ -107,20 +163,18 @@ class SingleCellFineBalancerLoop : public Object
         return 130.0 + 4.7 * std::pow(10.0, (txPowerDbm - 30.0) / 10.0);
     }
 
-    void ApplyCqiTimerThreshold()
+    void ApplyTxMode2Gain()
     {
-        std::string path = "/NodeList/" +
-                           std::to_string(m_enb->GetNode()->GetId()) +
-                           "/DeviceList/*/ComponentCarrierMap/*/LteEnbMac/FfMacScheduler/CqiTimerThreshold";
-        Config::Set(path, UintegerValue(m_cqiTimerThreshold));
+        // TxMode2Gain multiplies the SINR used for DL CQI feedback in mode-2 UEs
+        Config::Set("/NodeList/*/DeviceList/*/$ns3::LteUeNetDevice/LteUePhy/TxMode2Gain",
+                    DoubleValue(m_txMode2Gain));
     }
 
-    void ApplyUlGrantMcs()
+    void ApplyUeTxPower()
     {
-        std::string path = "/NodeList/" +
-                           std::to_string(m_enb->GetNode()->GetId()) +
-                           "/DeviceList/*/ComponentCarrierMap/*/LteEnbMac/FfMacScheduler/UlGrantMcs";
-        Config::Set(path, UintegerValue(m_ulGrantMcs));
+        // UE UL transmit power (affects ulThroughput and ulSinr at eNB)
+        Config::Set("/NodeList/*/DeviceList/*/$ns3::LteUeNetDevice/LteUePhy/TxPower",
+                    DoubleValue(m_ueTxPower));
     }
 
     void ResetPhyCounters()
@@ -140,16 +194,13 @@ class SingleCellFineBalancerLoop : public Object
     {
         m_collecting = false;
 
-        // KPMs collected here reflect the effect of the PREVIOUS action
         SnapshotKpms();
 
-        // Log the pending actions paired with the just-collected (post-action) KPMs
         for (const auto& a : m_pendingActions)
         {
             m_store->PutAction(m_step, a.xappName, a.paramName, a.value, m_enb->GetCellId(), 0);
         }
 
-        // Apply new action and store as pending for next step
         ApplyXapp();
 
         ResetWindow();
@@ -164,7 +215,6 @@ class SingleCellFineBalancerLoop : public Object
     {
         uint16_t cellId = m_enb->GetCellId();
         double totalCqi = 0.0;
-        double totalThroughput = 0.0;
         uint32_t servedUes = 0;
         uint32_t farUes = 0;
 
@@ -172,7 +222,6 @@ class SingleCellFineBalancerLoop : public Object
         {
             Ptr<LteUeNetDevice> ue = m_ueDevs.Get(i)->GetObject<LteUeNetDevice>();
             totalCqi += ue->GetPhy()->GetFineBalancerAvgCqi();
-            totalThroughput += ue->GetPhy()->GetFineBalancerDlThroughput();
             servedUes++;
             if (IsFarUe(ue))
             {
@@ -180,28 +229,46 @@ class SingleCellFineBalancerLoop : public Object
             }
         }
 
-        // Fraction of subframes in the collection window that had any DL scheduling
         double nSubframesTotal = m_collectingWindow * 1000.0;
         double rbUtil = nSubframesTotal == 0.0
                             ? 0.0
-                            : std::min(1.0, m_window.scheduledSubframes / nSubframesTotal);
+                            : std::min(1.0, m_window.scheduledDlSubframes / nSubframesTotal);
         double avgCqi = servedUes == 0 ? 0.0 : totalCqi / servedUes;
         double farRatio = servedUes == 0 ? 0.0 : static_cast<double>(farUes) / servedUes;
+        double avgRsrp =
+            m_window.countRsrp == 0 ? 0.0 : m_window.sumRsrp / m_window.countRsrp;
+        double avgRsrq =
+            m_window.countRsrp == 0 ? 0.0 : m_window.sumRsrq / m_window.countRsrp;
+        double avgUlSinrDb =
+            m_window.countUlSinr == 0 ? 0.0 : m_window.sumUlSinrDb / m_window.countUlSinr;
+        double avgUlInterference =
+            m_window.countUlInterference == 0
+                ? 0.0
+                : m_window.sumUlInterference / m_window.countUlInterference;
 
         m_latestRbUtil = rbUtil;
         m_latestDlThroughputMbps = m_window.dlThroughputMbps;
         m_latestAvgCqi = avgCqi;
 
-        // Current parameter state (Param_ prefix → separated into param columns in CSV)
+        // Parameters (Param_ prefix → separated into param columns in CSV)
         m_store->PutKpm(m_step, cellId, 0, 0, "Param_TxPower", m_txPower);
-        m_store->PutKpm(m_step, cellId, 0, 0, "Param_CqiTimerThreshold", m_cqiTimerThreshold);
-        m_store->PutKpm(m_step, cellId, 0, 0, "Param_UlGrantMcs", m_ulGrantMcs);
+        m_store->PutKpm(m_step, cellId, 0, 0, "Param_TxMode2Gain", m_txMode2Gain);
+        m_store->PutKpm(m_step, cellId, 0, 0, "Param_UeTxPower", m_ueTxPower);
 
-        // KPMs
+        // DL KPMs
         m_store->PutKpm(m_step, cellId, 0, 0, "rbUtil", rbUtil);
         m_store->PutKpm(m_step, cellId, 0, 0, "dlThroughput", m_window.dlThroughputMbps);
         m_store->PutKpm(m_step, cellId, 0, 0, "AvgCqi", avgCqi);
         m_store->PutKpm(m_step, cellId, 0, 0, "EstimatedPower_W", EstimatedPowerW(m_txPower));
+        m_store->PutKpm(m_step, cellId, 0, 0, "RSRP", avgRsrp);
+        m_store->PutKpm(m_step, cellId, 0, 0, "RSRQ", avgRsrq);
+
+        // UL KPMs
+        m_store->PutKpm(m_step, cellId, 0, 0, "ulThroughput", m_window.ulThroughputMbps);
+        m_store->PutKpm(m_step, cellId, 0, 0, "ulSinr", avgUlSinrDb);
+        m_store->PutKpm(m_step, cellId, 0, 0, "ulInterference", avgUlInterference);
+
+        // Coverage
         m_store->PutKpm(m_step, cellId, 0, 0, "ServedUes", servedUes);
         m_store->PutKpm(m_step, cellId, 0, 0, "FarUes", farRatio);
     }
@@ -222,7 +289,7 @@ class SingleCellFineBalancerLoop : public Object
         switch (m_step % 4)
         {
         case 0: {
-            // CoverageXapp: raise TxPower when CQI is below target
+            // CoverageXapp: raise eNB TxPower when DL CQI is below target
             if (m_latestAvgCqi < 7.0)
             {
                 m_txPower = std::min(46.0, m_txPower + 2.0);
@@ -232,7 +299,8 @@ class SingleCellFineBalancerLoop : public Object
             break;
         }
         case 1: {
-            // EnergyXapp: TxPower only — reduce when any throughput is delivered (save energy)
+            // EnergyXapp: reduce eNB TxPower when throughput is sufficient (save energy)
+            // Direct conflict with CoverageXapp on TxPower
             if (m_latestDlThroughputMbps > 0.5)
             {
                 m_txPower = std::max(20.0, m_txPower - 2.0);
@@ -242,41 +310,42 @@ class SingleCellFineBalancerLoop : public Object
             break;
         }
         case 2: {
-            // QoSXapp: CqiTimerThreshold only — sawtooth sweep 1↔10 for observable variation
-            if (m_cqiSweepUp)
+            // QoSXapp: sweep TxMode2Gain 0↔4.2 dB at half speed (period=16 steps)
+            // Higher gain → higher effective SINR for CQI → scheduler selects higher MCS
+            // Independent variation from UeTxPower (different period)
+            if (m_step % 16 < 8)
             {
-                m_cqiTimerThreshold = std::min(10u, m_cqiTimerThreshold + 2);
-                if (m_cqiTimerThreshold >= 10)
-                {
-                    m_cqiSweepUp = false;
-                }
+                m_txMode2Gain = std::min(4.2, m_txMode2Gain + 1.05);
             }
             else
             {
-                m_cqiTimerThreshold = std::max(1u, m_cqiTimerThreshold - 2);
-                if (m_cqiTimerThreshold <= 1)
-                {
-                    m_cqiSweepUp = true;
-                }
+                m_txMode2Gain = std::max(0.0, m_txMode2Gain - 1.05);
             }
-            ApplyCqiTimerThreshold();
-            m_pendingActions.push_back(
-                {"QoSXapp", "CqiTimerThreshold", static_cast<double>(m_cqiTimerThreshold)});
+            ApplyTxMode2Gain();
+            m_pendingActions.push_back({"QoSXapp", "TxMode2Gain", m_txMode2Gain});
             break;
         }
         case 3: {
-            // LoadXapp: UlGrantMcs — increase when RB utilization is high
-            if (m_latestRbUtil > 0.3)
+            // LoadXapp: sweep UE UL TxPower 10↔23 dBm at double speed (period=4 steps)
+            // Higher UL power → higher ulSinr → higher ulThroughput
+            if (m_ueTxPowerUp)
             {
-                m_ulGrantMcs = std::min(28u, m_ulGrantMcs + 1);
-                ApplyUlGrantMcs();
+                m_ueTxPower = std::min(23.0, m_ueTxPower + 6.5);
+                if (m_ueTxPower >= 23.0)
+                {
+                    m_ueTxPowerUp = false;
+                }
             }
             else
             {
-                m_ulGrantMcs = std::max(1u, m_ulGrantMcs - 1);
-                ApplyUlGrantMcs();
+                m_ueTxPower = std::max(10.0, m_ueTxPower - 6.5);
+                if (m_ueTxPower <= 10.0)
+                {
+                    m_ueTxPowerUp = true;
+                }
             }
-            m_pendingActions.push_back({"LoadXapp", "UlGrantMcs", static_cast<double>(m_ulGrantMcs)});
+            ApplyUeTxPower();
+            m_pendingActions.push_back({"LoadXapp", "UeTxPower", m_ueTxPower});
             break;
         }
         }
@@ -294,18 +363,22 @@ class SingleCellFineBalancerLoop : public Object
     Ptr<LteEnbNetDevice> m_enb;
     NetDeviceContainer m_ueDevs;
     Ptr<FineBalancerKpmStore> m_store;
-    LteAmc m_amc;
     Window m_window;
     bool m_collecting{false};
     uint32_t m_step{0};
     double m_stepTime{1.0};
     double m_collectingWindow{0.05};
 
+    // Controlled parameters
     double m_txPower{40.0};
-    uint32_t m_cqiTimerThreshold{5};
-    uint32_t m_ulGrantMcs{14};
-    bool m_cqiSweepUp{true};
+    double m_txMode2Gain{4.2};
+    double m_ueTxPower{23.0};
 
+    // Sweep direction flags
+    bool m_txMode2GainUp{false};
+    bool m_ueTxPowerUp{false};
+
+    // Latest KPM snapshot (used by xApps)
     double m_latestRbUtil{0.0};
     double m_latestDlThroughputMbps{0.0};
     double m_latestAvgCqi{0.0};
@@ -321,14 +394,58 @@ class SingleCellFineBalancerLoop : public Object
     std::string m_csvFilename{"single-cell-finebalancer-log.csv"};
 };
 
+// ── Global callbacks (ns3 trace system requires free functions) ──────────────
+
 static Ptr<SingleCellFineBalancerLoop> g_loop;
 
 static void
-SingleCellDlPhyTransmissionCallback(std::string context, const PhyTransmissionStatParameters params)
+DlPhyTxCb(std::string context, const PhyTransmissionStatParameters p)
 {
     if (g_loop)
     {
-        g_loop->HandleDlPhyTransmission(context, params);
+        g_loop->HandleDlPhyTransmission(context, p);
+    }
+}
+
+static void
+UeMeasurementsCb(std::string context,
+                 uint16_t rnti,
+                 uint16_t cellId,
+                 double rsrp,
+                 double rsrq,
+                 bool isServing,
+                 uint8_t ccId)
+{
+    if (g_loop)
+    {
+        g_loop->HandleUeMeasurements(context, rnti, cellId, rsrp, rsrq, isServing, ccId);
+    }
+}
+
+static void
+UlPhyTxCb(std::string context, const PhyTransmissionStatParameters p)
+{
+    if (g_loop)
+    {
+        g_loop->HandleUlPhyTransmission(context, p);
+    }
+}
+
+static void
+UlSinrCb(std::string context, uint16_t cellId, uint16_t rnti, double sinr, uint8_t ccId)
+{
+    if (g_loop)
+    {
+        g_loop->HandleUlSinrReport(context, cellId, rnti, sinr, ccId);
+    }
+}
+
+static void
+UlInterferenceCb(std::string context, uint16_t cellId, Ptr<SpectrumValue> interf)
+{
+    if (g_loop)
+    {
+        g_loop->HandleUlInterference(context, cellId, interf);
     }
 }
 
@@ -340,18 +457,19 @@ main(int argc, char* argv[])
     double stepTime = 1.0;
     double collectingWindow = 0.05;
     double enbTxPowerDbm = 40.0;
-    uint32_t initCqiTimerThreshold = 5;
-    uint32_t initUlGrantMcs = 14;
+    double initTxMode2GainDb = 4.2;
+    double initUeTxPowerDbm = 23.0;
     std::string csvFilename = "single-cell-finebalancer-log.csv";
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("numberOfUes", "Number of fixed UEs", numberOfUes);
     cmd.AddValue("simTime", "Simulation time in seconds", simTime);
     cmd.AddValue("stepTime", "xApp step interval in seconds", stepTime);
-    cmd.AddValue("collectingWindow", "KPM collection window before each step in seconds", collectingWindow);
+    cmd.AddValue("collectingWindow", "KPM collection window before each step in seconds",
+                 collectingWindow);
     cmd.AddValue("enbTxPowerDbm", "Initial eNB TxPower in dBm", enbTxPowerDbm);
-    cmd.AddValue("initCqiTimerThreshold", "Initial CqiTimerThreshold (TTI)", initCqiTimerThreshold);
-    cmd.AddValue("initUlGrantMcs", "Initial UlGrantMcs (0-28)", initUlGrantMcs);
+    cmd.AddValue("initTxMode2GainDb", "Initial TxMode2Gain in dB (default 4.2)", initTxMode2GainDb);
+    cmd.AddValue("initUeTxPowerDbm", "Initial UE UL TxPower in dBm (default 23)", initUeTxPowerDbm);
     cmd.AddValue("csv", "Output CSV filename", csvFilename);
     cmd.Parse(argc, argv);
 
@@ -361,6 +479,9 @@ main(int argc, char* argv[])
     Config::SetDefault("ns3::UdpClient::Interval", TimeValue(MilliSeconds(20)));
     Config::SetDefault("ns3::UdpClient::PacketSize", UintegerValue(1400));
     Config::SetDefault("ns3::UdpClient::MaxPackets", UintegerValue(10000000));
+    // Report UE measurements every 50ms so they land in the 50ms collection window
+    Config::SetDefault("ns3::LteUePhy::UeMeasurementsFilterPeriod",
+                       TimeValue(MilliSeconds(50)));
 
     Ptr<LteHelper> lteHelper = CreateObject<LteHelper>();
     Ptr<PointToPointEpcHelper> epcHelper = CreateObject<PointToPointEpcHelper>();
@@ -429,17 +550,28 @@ main(int argc, char* argv[])
         ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
     }
 
+    Ipv4InterfaceContainer remoteIfaces = ipv4h.Assign(NetDeviceContainer());
+    Ipv4Address remoteHostAddr("1.0.0.2");
+
     uint16_t dlPort = 10000;
+    uint16_t ulPort = 20000;
     for (uint32_t i = 0; i < numberOfUes; ++i)
     {
+        // DL: remoteHost → UE
         ++dlPort;
         UdpClientHelper dlClientHelper(ueIpIfaces.GetAddress(i), dlPort);
-        PacketSinkHelper dlPacketSinkHelper("ns3::UdpSocketFactory",
-                                            InetSocketAddress(Ipv4Address::GetAny(), dlPort));
-        ApplicationContainer serverApps = dlPacketSinkHelper.Install(ueNodes.Get(i));
-        ApplicationContainer clientApps = dlClientHelper.Install(remoteHost);
-        serverApps.Start(Seconds(0.2));
-        clientApps.Start(Seconds(0.3));
+        PacketSinkHelper dlSinkHelper("ns3::UdpSocketFactory",
+                                      InetSocketAddress(Ipv4Address::GetAny(), dlPort));
+        dlSinkHelper.Install(ueNodes.Get(i)).Start(Seconds(0.2));
+        dlClientHelper.Install(remoteHost).Start(Seconds(0.3));
+
+        // UL: UE → remoteHost
+        ++ulPort;
+        UdpClientHelper ulClientHelper(remoteHostAddr, ulPort);
+        PacketSinkHelper ulSinkHelper("ns3::UdpSocketFactory",
+                                      InetSocketAddress(Ipv4Address::GetAny(), ulPort));
+        ulSinkHelper.Install(remoteHost).Start(Seconds(0.2));
+        ulClientHelper.Install(ueNodes.Get(i)).Start(Seconds(0.3));
     }
 
     g_loop = CreateObject<SingleCellFineBalancerLoop>();
@@ -447,11 +579,27 @@ main(int argc, char* argv[])
                   ueLteDevs,
                   stepTime,
                   collectingWindow,
-                  initCqiTimerThreshold,
-                  initUlGrantMcs,
+                  initTxMode2GainDb,
+                  initUeTxPowerDbm,
                   csvFilename);
-    Config::Connect("/NodeList/*/DeviceList/*/ComponentCarrierMap/*/LteEnbPhy/DlPhyTransmission",
-                    MakeCallback(&SingleCellDlPhyTransmissionCallback));
+
+    // Connect KPM traces directly (no O-RAN subscription — FineBalancer design)
+    Config::Connect(
+        "/NodeList/*/DeviceList/*/ComponentCarrierMap/*/LteEnbPhy/DlPhyTransmission",
+        MakeCallback(&DlPhyTxCb));
+    Config::Connect(
+        "/NodeList/*/DeviceList/*/ComponentCarrierMapUe/*/LteUePhy/ReportUeMeasurements",
+        MakeCallback(&UeMeasurementsCb));
+    Config::Connect(
+        "/NodeList/*/DeviceList/*/ComponentCarrierMapUe/*/LteUePhy/UlPhyTransmission",
+        MakeCallback(&UlPhyTxCb));
+    Config::Connect(
+        "/NodeList/*/DeviceList/*/ComponentCarrierMap/*/LteEnbPhy/ReportUeSinr",
+        MakeCallback(&UlSinrCb));
+    Config::Connect(
+        "/NodeList/*/DeviceList/*/ComponentCarrierMap/*/LteEnbPhy/ReportInterference",
+        MakeCallback(&UlInterferenceCb));
+
     g_loop->Start();
 
     Simulator::Stop(Seconds(simTime));

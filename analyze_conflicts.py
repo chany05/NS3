@@ -25,19 +25,22 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 #
 # Param → KPI (causal, known from physics/design — evaluation only)
 PARAM_KPI: dict[str, list[str]] = {
-    "TxPower": ["AvgCqi", "dlThroughput", "EstimatedPower_W", "rbUtil"],
-    # CqiTimerThreshold: controls CQI report expiry — no measurable DL KPI effect in ns3-LTE
-    # UlGrantMcs: UL-only parameter — no DL KPI effect
+    # eNB DL TxPower → DL signal quality + power consumption
+    "TxPower": ["AvgCqi", "dlThroughput", "EstimatedPower_W", "rbUtil", "RSRP", "RSRQ"],
+    # TxMode2Gain: multiplies SINR in CQI computation — effect too small to detect in ns3-LTE
+    # UeTxPower: UL TxPower — SRS SINR path does not reflect UeTxPower changes in ns3-LTE FDD
 }
 
 # xApp → Param assignment (one param per xApp — no co-variation by design)
-#   CoverageXapp → TxPower   (raises TxPower when CQI low)
-#   EnergyXapp   → TxPower   (lowers TxPower when throughput high)  ← direct conflict
-#   QoSXapp      → CqiTimerThreshold
-#   LoadXapp     → UlGrantMcs
+#   CoverageXapp → TxPower      (raises TxPower when CQI low)
+#   EnergyXapp   → TxPower      (lowers TxPower when throughput high) ← direct conflict
+#   QoSXapp      → TxMode2Gain  (sweeps CQI SINR multiplier)          ← indirect conflict
+#   LoadXapp     → UeTxPower    (sweeps UE UL power — UL domain)
 
-PARAMS = ["TxPower", "CqiTimerThreshold", "UlGrantMcs"]
-KPIS   = ["rbUtil", "dlThroughput", "AvgCqi", "EstimatedPower_W", "ServedUes", "FarUes"]
+PARAMS = ["TxPower", "TxMode2Gain", "UeTxPower"]
+KPIS   = ["rbUtil", "dlThroughput", "AvgCqi", "EstimatedPower_W",
+          "RSRP", "RSRQ", "ulThroughput", "ulSinr", "ulInterference",
+          "ServedUes", "FarUes"]
 FEATURES = PARAMS + KPIS
 
 
