@@ -22,6 +22,7 @@
 #include <ns3/double.h>
 #include <ns3/log.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace ns3
@@ -37,7 +38,20 @@ ThreeGppAntennaModel::GetTypeId()
     static TypeId tid = TypeId("ns3::ThreeGppAntennaModel")
                             .SetParent<AntennaModel>()
                             .SetGroupName("Antenna")
-                            .AddConstructor<ThreeGppAntennaModel>();
+                            .AddConstructor<ThreeGppAntennaModel>()
+                            .AddAttribute("BearingAngle",
+                                          "The antenna bearing angle in degrees.",
+                                          DoubleValue(0.0),
+                                          MakeDoubleAccessor(&ThreeGppAntennaModel::SetBearingAngle,
+                                                             &ThreeGppAntennaModel::GetBearingAngle),
+                                          MakeDoubleChecker<double>(-180.0, 180.0))
+                            .AddAttribute("DowntiltAngle",
+                                          "The electrical downtilt angle in degrees. "
+                                          "Positive values tilt the main lobe below the horizon.",
+                                          DoubleValue(0.0),
+                                          MakeDoubleAccessor(&ThreeGppAntennaModel::SetDowntiltAngle,
+                                                             &ThreeGppAntennaModel::GetDowntiltAngle),
+                                          MakeDoubleChecker<double>(-30.0, 30.0));
     return tid;
 }
 
@@ -46,7 +60,9 @@ ThreeGppAntennaModel::ThreeGppAntennaModel()
       m_horizontalBeamwidthDegrees{65},
       m_aMax{30},
       m_slaV{30},
-      m_geMax{8.0}
+      m_geMax{8.0},
+      m_bearingDegrees{0.0},
+      m_downtiltDegrees{0.0}
 {
 }
 
@@ -84,13 +100,47 @@ ThreeGppAntennaModel::GetAntennaElementGain() const
     return m_geMax;
 }
 
+void
+ThreeGppAntennaModel::SetBearingAngle(double bearingDegrees)
+{
+    m_bearingDegrees = bearingDegrees;
+}
+
+double
+ThreeGppAntennaModel::GetBearingAngle() const
+{
+    return m_bearingDegrees;
+}
+
+void
+ThreeGppAntennaModel::SetDowntiltAngle(double downtiltDegrees)
+{
+    m_downtiltDegrees = downtiltDegrees;
+}
+
+double
+ThreeGppAntennaModel::GetDowntiltAngle() const
+{
+    return m_downtiltDegrees;
+}
+
 double
 ThreeGppAntennaModel::GetGainDb(Angles a)
 {
     NS_LOG_FUNCTION(this << a);
 
-    double phiDeg = RadiansToDegrees(a.GetAzimuth());
-    double thetaDeg = RadiansToDegrees(a.GetInclination());
+    double phiDeg = RadiansToDegrees(a.GetAzimuth()) - m_bearingDegrees;
+    while (phiDeg > 180.0)
+    {
+        phiDeg -= 360.0;
+    }
+    while (phiDeg < -180.0)
+    {
+        phiDeg += 360.0;
+    }
+
+    double thetaDeg = RadiansToDegrees(a.GetInclination()) - m_downtiltDegrees;
+    thetaDeg = std::clamp(thetaDeg, 0.0, 180.0);
 
     NS_ASSERT_MSG(-180.0 <= phiDeg && phiDeg <= 180.0, "Out of boundaries: phiDeg=" << phiDeg);
     NS_ASSERT_MSG(0.0 <= thetaDeg && thetaDeg <= 180.0, "Out of boundaries: thetaDeg=" << thetaDeg);

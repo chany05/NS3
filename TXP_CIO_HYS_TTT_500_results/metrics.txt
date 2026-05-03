@@ -1,0 +1,17 @@
+csv=TXP_CIO_HYS_TTT_500.csv
+threshold=0.5
+level=2
+warmup_step=9
+validation_report=TXP_CIO_HYS_TTT_500_results/validation_report.txt
+action_mismatch_count=81
+inactive_kpis=
+
+[Level1-Pearson]
+precision=0.8000
+recall=0.2500
+f1=0.3810
+
+[Level2-GNN]
+precision=0.4783
+recall=0.3438
+f1=0.4000

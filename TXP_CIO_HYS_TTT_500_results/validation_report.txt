@@ -1,0 +1,85 @@
+TwoCell scenario validation
+=======================================================
+rows=248 steps=248 warmup_step=9
+validation_steps=239
+
+KPM default-like counts
+  c0.SINR      default=      0 all=  0 warm=  0
+  c1.SINR      default=      0 all=  0 warm=  0
+  c0.DLThp     default=      0 all=  0 warm=  0
+  c1.DLThp     default=      0 all=  0 warm=  0
+  c0.Load      default=      0 all=  0 warm=  0
+  c1.Load      default=      0 all=  0 warm=  0
+  c0.RButil    default=      0 all=  0 warm=  0
+  c1.RButil    default=      0 all=  0 warm=  0
+
+KPM ranges after warm-up
+  c0.SINR      min=     13.8 max=       16 mean=    14.71 unique=11
+  c1.SINR      min=     13.2 max=     15.4 mean=    14.11 unique=11
+  c0.DLThp     min=    2.029 max=    2.942 mean=    2.259 unique=54
+  c1.DLThp     min=    2.029 max=    2.942 mean=    2.259 unique=62
+  c0.Load      min=   0.4082 max=   0.5918 mean=      0.5 unique=101
+  c1.Load      min=   0.4082 max=   0.5918 mean=      0.5 unique=101
+  c0.RButil    min=   0.2029 max=   0.2942 mean=   0.2259 unique=54
+  c1.RButil    min=   0.2029 max=   0.2942 mean=   0.2259 unique=62
+
+Empty-cell-like steps after warm-up
+  c0: count=0 steps=none
+  c1: count=0 steps=none
+
+Action delta consistency
+  c0.CIO   mismatch=  0/14  max_abs_err=0
+  c0.Hys   mismatch=  0/13  max_abs_err=0
+  c0.TTT   mismatch=  0/14  max_abs_err=0
+  c0.TxP   mismatch= 40/82  max_abs_err=1
+    step=  7 c0_TxPower_delta requested=2 actual=1
+    step= 12 c0_TxPower_delta requested=2 actual=1
+    step= 19 c0_TxPower_delta requested=2 actual=1
+    step= 24 c0_TxPower_delta requested=2 actual=1
+    step= 31 c0_TxPower_delta requested=2 actual=1
+  c1.CIO   mismatch=  0/14  max_abs_err=0
+  c1.Hys   mismatch=  0/14  max_abs_err=0
+  c1.TTT   mismatch=  0/13  max_abs_err=0
+  c1.TxP   mismatch= 41/83  max_abs_err=1
+    step=  6 c1_TxPower_delta requested=2 actual=1
+    step= 13 c1_TxPower_delta requested=2 actual=1
+    step= 18 c1_TxPower_delta requested=2 actual=1
+    step= 25 c1_TxPower_delta requested=2 actual=1
+    step= 30 c1_TxPower_delta requested=2 actual=1
+
+Expected relationship correlations after warm-up
+  c0.TxP   -> c0.SINR    pearson=  0.999 lag1=  0.315
+  c0.TxP   -> c0.DLThp   pearson=  0.689 lag1=  0.286
+  c0.TxP   -> c0.Load    pearson=  0.719 lag1=  0.234
+  c0.TxP   -> c0.RButil  pearson=  0.689 lag1=  0.286
+  c1.TxP   -> c1.SINR    pearson=  0.999 lag1=  0.314
+  c1.TxP   -> c1.DLThp   pearson=  0.689 lag1=  0.301
+  c1.TxP   -> c1.Load    pearson=  0.719 lag1=  0.249
+  c1.TxP   -> c1.RButil  pearson=  0.689 lag1=  0.301
+  c0.CIO   -> c0.Load    pearson=  0.000 lag1=  0.095
+  c0.CIO   -> c1.Load    pearson= -0.000 lag1= -0.095
+  c0.CIO   -> c0.RButil  pearson=  0.001 lag1=  0.158
+  c0.CIO   -> c1.RButil  pearson=  0.001 lag1=  0.003
+  c1.CIO   -> c0.Load    pearson= -0.029 lag1= -0.105
+  c1.CIO   -> c1.Load    pearson=  0.029 lag1=  0.105
+  c1.CIO   -> c0.RButil  pearson= -0.028 lag1= -0.009
+  c1.CIO   -> c1.RButil  pearson=  0.019 lag1=  0.162
+  c0.Hys   -> c0.Load    pearson= -0.000 lag1=  0.086
+  c0.Hys   -> c1.Load    pearson=  0.000 lag1= -0.086
+  c0.Hys   -> c0.RButil  pearson=  0.001 lag1=  0.143
+  c0.Hys   -> c1.RButil  pearson=  0.001 lag1=  0.002
+  c1.Hys   -> c0.Load    pearson=  0.000 lag1= -0.101
+  c1.Hys   -> c1.Load    pearson= -0.000 lag1=  0.101
+  c1.Hys   -> c0.RButil  pearson=  0.001 lag1= -0.003
+  c1.Hys   -> c1.RButil  pearson=  0.001 lag1=  0.162
+  c0.TTT   -> c0.Load    pearson= -0.000 lag1=  0.095
+  c0.TTT   -> c1.Load    pearson=  0.000 lag1= -0.095
+  c0.TTT   -> c0.RButil  pearson=  0.001 lag1=  0.158
+  c0.TTT   -> c1.RButil  pearson=  0.001 lag1=  0.003
+  c1.TTT   -> c0.Load    pearson=  0.029 lag1= -0.076
+  c1.TTT   -> c1.Load    pearson= -0.029 lag1=  0.076
+  c1.TTT   -> c0.RButil  pearson=  0.025 lag1=  0.015
+  c1.TTT   -> c1.RButil  pearson= -0.022 lag1=  0.138
+
+Inactive KPI warning
+  none

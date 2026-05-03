@@ -76,6 +76,36 @@ class ThreeGppAntennaModel : public AntennaModel
      */
     double GetAntennaElementGain() const;
 
+    /**
+     * Set the antenna bearing angle.
+     *
+     * \param bearingDegrees bearing angle in degrees
+     */
+    void SetBearingAngle(double bearingDegrees);
+
+    /**
+     * Get the antenna bearing angle.
+     *
+     * \return bearing angle in degrees
+     */
+    double GetBearingAngle() const;
+
+    /**
+     * Set the electrical downtilt angle.
+     *
+     * Positive values tilt the main lobe below the horizon.
+     *
+     * \param downtiltDegrees downtilt angle in degrees
+     */
+    void SetDowntiltAngle(double downtiltDegrees);
+
+    /**
+     * Get the electrical downtilt angle.
+     *
+     * \return downtilt angle in degrees
+     */
+    double GetDowntiltAngle() const;
+
   private:
     double m_verticalBeamwidthDegrees; //!< beamwidth in the vertical direction \f$(\theta_{3dB})\f$
                                        //!< [deg]
@@ -84,6 +114,8 @@ class ThreeGppAntennaModel : public AntennaModel
     double m_aMax;                       //!< maximum attenuation (A_{max}) [dB]
     double m_slaV;  //!< side-lobe attenuation in the vertical direction (SLA_V) [dB]
     double m_geMax; //!< maximum directional gain of the antenna element (G_{E,max}) [dBi]
+    double m_bearingDegrees; //!< bearing angle in degrees
+    double m_downtiltDegrees; //!< electrical downtilt angle in degrees
 };
 
 } // namespace ns3

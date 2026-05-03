@@ -1,0 +1,62 @@
+TwoCell scenario validation
+=======================================================
+rows=22 steps=22 warmup_step=9
+validation_steps=13
+
+KPM default-like counts
+  c0.SINR      default=      0 all=  0 warm=  0
+  c1.SINR      default=      0 all=  0 warm=  0
+  c0.DLThp     default=      0 all=  0 warm=  0
+  c1.DLThp     default=      0 all=  0 warm=  0
+  c0.Load      default=      0 all=  0 warm=  0
+  c1.Load      default=      0 all=  0 warm=  0
+  c0.RButil    default=      0 all=  0 warm=  0
+  c1.RButil    default=      0 all=  0 warm=  0
+
+KPM ranges after warm-up
+  c0.SINR      min=    12.08 max=       14 mean=    12.94 unique=3
+  c1.SINR      min=    11.48 max=     13.4 mean=    12.32 unique=3
+  c0.DLThp     min=     2.03 max=     2.03 mean=     2.03 unique=1
+  c1.DLThp     min=     2.03 max=     2.03 mean=     2.03 unique=1
+  c0.Load      min=      0.5 max=      0.5 mean=      0.5 unique=1
+  c1.Load      min=      0.5 max=      0.5 mean=      0.5 unique=1
+  c0.RButil    min=    0.203 max=    0.203 mean=    0.203 unique=1
+  c1.RButil    min=    0.203 max=    0.203 mean=    0.203 unique=1
+
+Empty-cell-like steps after warm-up
+  c0: count=0 steps=none
+  c1: count=0 steps=none
+
+Action delta consistency
+  c0.CIO   mismatch=  0/3   max_abs_err=0
+  c0.RET   mismatch=  0/3   max_abs_err=0
+  c0.TxP   mismatch=  0/4   max_abs_err=0
+  c1.CIO   mismatch=  0/3   max_abs_err=0
+  c1.RET   mismatch=  0/3   max_abs_err=0
+  c1.TxP   mismatch=  0/5   max_abs_err=0
+
+Expected relationship correlations after warm-up
+  c0.TxP   -> c0.SINR    pearson=  0.000 lag1=  0.000
+  c0.TxP   -> c0.DLThp   pearson=  0.000 lag1=  0.000
+  c1.TxP   -> c1.SINR    pearson=  0.000 lag1=  0.000
+  c1.TxP   -> c1.DLThp   pearson=  0.000 lag1=  0.000
+  c0.RET   -> c0.SINR    pearson= -0.998 lag1= -0.824
+  c0.RET   -> c0.DLThp   pearson=  0.000 lag1=  0.000
+  c1.RET   -> c1.SINR    pearson= -0.999 lag1= -0.872
+  c1.RET   -> c1.DLThp   pearson=  0.000 lag1=  0.000
+  c0.CIO   -> c0.Load    pearson=  0.000 lag1=  0.000
+  c0.CIO   -> c1.Load    pearson=  0.000 lag1=  0.000
+  c0.CIO   -> c0.RButil  pearson=  0.000 lag1=  0.000
+  c0.CIO   -> c1.RButil  pearson=  0.000 lag1=  0.000
+  c1.CIO   -> c0.Load    pearson=  0.000 lag1=  0.000
+  c1.CIO   -> c1.Load    pearson=  0.000 lag1=  0.000
+  c1.CIO   -> c0.RButil  pearson=  0.000 lag1=  0.000
+  c1.CIO   -> c1.RButil  pearson=  0.000 lag1=  0.000
+
+Inactive KPI warning
+  c0.DLThp is constant after warm-up
+  c1.DLThp is constant after warm-up
+  c0.Load is constant after warm-up
+  c1.Load is constant after warm-up
+  c0.RButil is constant after warm-up
+  c1.RButil is constant after warm-up

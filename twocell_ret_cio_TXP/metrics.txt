@@ -1,0 +1,17 @@
+csv=twocell_ret_cio_only_smoke_48.csv
+threshold=0.5
+level=2
+warmup_step=9
+validation_report=twocell_ret_cio_only_smoke_48_results/validation_report.txt
+action_mismatch_count=0
+inactive_kpis=c0_dlThroughput,c1_dlThroughput,c0_trafficLoad,c1_trafficLoad,c0_rbUtil,c1_rbUtil
+
+[Level1-Pearson]
+precision=0.3571
+recall=0.3125
+f1=0.3333
+
+[Level2-GNN]
+precision=0.3684
+recall=0.4375
+f1=0.4000

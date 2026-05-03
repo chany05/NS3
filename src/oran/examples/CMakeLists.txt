@@ -111,6 +111,19 @@ build_lib_example(
         ${libapplications}
 )
 
+build_lib_example(
+        NAME TwoCellConflictScenario
+        SOURCE_FILES TwoCellConflictScenario.cc
+        LIBRARIES_TO_LINK
+        ${libcore}
+        ${libinternet}
+        ${libmobility}
+        ${libpoint-to-point}
+        ${liblte}
+        ${liboran}
+        ${libapplications}
+)
+
 if(oran_has_mlpack)
     target_compile_definitions(HandoverXappsScenario PUBLIC ORAN_HAS_MLPACK=1)
     target_compile_options(HandoverXappsScenario PUBLIC -fopenmp)

@@ -1,0 +1,17 @@
+csv=/home/baeginchan789/NS3-chany05/TXP_CIO_RET_500.csv
+threshold=0.5
+level=2
+warmup_step=9
+validation_report=./twocell_results/validation_report.txt
+action_mismatch_count=69
+inactive_kpis=
+
+[Level1-Pearson]
+precision=0.5882
+recall=0.4167
+f1=0.4878
+
+[Level2-GNN]
+precision=0.4706
+recall=0.3333
+f1=0.3902
